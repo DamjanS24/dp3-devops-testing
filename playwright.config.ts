@@ -17,9 +17,15 @@ export default defineConfig({
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: {
-    command: 'npm run preview -- --port 4173 --strictPort',
+    // --host vastzetten op 127.0.0.1. Zonder dat bindt vite zich aan
+    // "localhost", wat op een CI runner eerst IPv6 is, en dan wacht Playwright
+    // zich suf op een server die wel draait maar niet op dat adres luistert.
+    command: 'npm run preview -- --port 4173 --strictPort --host 127.0.0.1',
     url,
     reuseExistingServer: !process.env.CI,
-    timeout: 60_000
+    timeout: 60_000,
+    // Zo staat de uitvoer van de server in de log als hij ooit weer faalt.
+    stdout: 'pipe',
+    stderr: 'pipe'
   }
 });
