@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quote van de dag</title>
+  <meta name="description" content="Elke dag een quote, met je eigen favorieten, opgeleverd door een CI/CD pipeline">
+</head>
+<body>
+  <main class="scherm">
+    <p class="datum" data-testid="datum"></p>
+
+    <figure class="quote">
+      <blockquote class="tekst" data-testid="quote-tekst"></blockquote>
+      <figcaption class="bron" data-testid="quote-bron"></figcaption>
+    </figure>
+
+    <nav class="bediening" aria-label="door de quotes bladeren">
+      <button class="knop" type="button" data-testid="vorige" aria-label="vorige quote">Vorige</button>
+      <button class="knop hart" type="button" data-testid="favoriet" aria-pressed="false">
+        <span class="hart-teken" aria-hidden="true">&#9825;</span>
+        <span data-testid="favoriet-label">Bewaren</span>
+      </button>
+      <button class="knop primair" type="button" data-testid="volgende" aria-label="volgende quote">Volgende</button>
+    </nav>
+
+    <p class="teller" data-testid="teller" aria-live="polite"></p>
+
+    <section class="bewaard" aria-labelledby="bewaard-kop">
+      <h2 class="bewaard-kop" id="bewaard-kop">Bewaard</h2>
+      <p class="leeg" data-testid="bewaard-leeg">Nog niets bewaard. Wat je bewaart blijft staan als je terugkomt.</p>
+      <ul class="bewaard-lijst" data-testid="bewaard-lijst"></ul>
+    </section>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+:root {
+  color-scheme: dark;
+  --bg: #0b0d10;
+  --vlak: #141921;
+  --tekst: #eceff3;
+  --gedempt: #99a2ae;      /* 7,2 op 1 tegen de achtergrond */
+  --lijn: #232a33;
+  --accent: #1b61d1;       /* wit erop is 5,7 op 1 */
+  --accent-licht: #7ab4ff;
+  --hart: #ff7b85;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--tekst);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+.scherm {
+  min-height: 100%;
+  max-width: 54rem;
+  margin: 0 auto;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto auto;
+  gap: 22px;
+  padding-block: 32px 48px;
+  padding-left: max(24px, env(safe-area-inset-left, 0px));
+  padding-right: max(24px, env(safe-area-inset-right, 0px));
+}
+
+.datum {
+  margin: 0;
+  color: var(--gedempt);
+  font-size: 0.8rem;
+  letter-spacing: 0.12em;
+  font-variant-numeric: tabular-nums;
+}
+
+.quote {
+  margin: 0;
+  align-self: center;
+  justify-self: center;
+  max-width: 42rem;
+  text-align: center;
+  padding-block: 24px;
+}
+
+.tekst {
+  margin: 0;
+  font-family: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  font-size: clamp(1.7rem, 1.05rem + 2.5vw, 3rem);
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.tekst::before { content: "\201C"; }
+.tekst::after  { content: "\201D"; }
+
+.bron {
+  margin-top: 26px;
+  color: var(--gedempt);
+  font-size: 0.9rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.bediening {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.knop {
+  font: inherit;
+  font-size: 0.95rem;
+  padding: 10px 20px;
+  border-radius: 999px;
+  border: 1px solid var(--lijn);
+  background: transparent;
+  color: var(--tekst);
+  cursor: pointer;
+}
+.knop:hover { border-color: var(--accent-licht); color: var(--accent-licht); }
+.knop:focus-visible { outline: 2px solid var(--accent-licht); outline-offset: 2px; }
+
+.knop.primair { border-color: var(--accent); background: var(--accent); color: #fff; }
+.knop.primair:hover { filter: brightness(1.1); color: #fff; }
+
+.hart { display: inline-flex; align-items: center; gap: 9px; }
+.hart[data-bewaard="true"] { border-color: var(--hart); color: var(--hart); }
+.hart[data-bewaard="true"] .hart-teken::before { content: "\2665"; }
+.hart .hart-teken::before { content: "\2661"; }
+.hart-teken { font-size: 1.05rem; line-height: 1; }
+
+.teller {
+  margin: 0;
+  text-align: center;
+  color: var(--gedempt);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.bewaard {
+  border-top: 1px solid var(--lijn);
+  padding-top: 24px;
+}
+
+.bewaard-kop {
+  margin: 0 0 14px;
+  font-size: 0.78rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gedempt);
+  font-weight: 600;
+}
+
+.leeg { margin: 0; color: var(--gedempt); font-size: 0.9rem; }
+
+.bewaard-lijst { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+
+.bewaard-lijst li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--vlak);
+  border: 1px solid var(--lijn);
+  border-radius: 12px;
+  padding: 10px 12px 10px 16px;
+}
+
+.bewaard-tekst {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.92rem;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--tekst);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 0;
+}
+.bewaard-tekst:hover { color: var(--accent-licht); }
+.bewaard-tekst:focus-visible { outline: 2px solid var(--accent-licht); outline-offset: 2px; }
+
+.bewaard-weg {
+  font: inherit;
+  font-size: 0.8rem;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--gedempt);
+  padding: 6px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.bewaard-weg:hover { color: var(--hart); border-color: var(--hart); }
+.bewaard-weg:focus-visible { outline: 2px solid var(--accent-licht); outline-offset: 2px; }
+
+[hidden] { display: none !important; }
+
+@media (max-width: 420px) {
+  .bediening { gap: 8px; }
+  .knop { padding: 9px 15px; font-size: 0.9rem; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
