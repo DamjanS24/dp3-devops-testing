@@ -5,3 +5,5 @@ test-results/
 coverage/
 *.log
 setup-github.ps1
+push.ps1
+lighthouse.json

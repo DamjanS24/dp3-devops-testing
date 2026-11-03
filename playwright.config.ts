@@ -1,7 +1,11 @@
 import { defineConfig, devices } from '@playwright/test';
 
 const base = process.env.VITE_BASE ?? '/';
-const url = `http://127.0.0.1:4173${base}`;
+
+// Normaal start Playwright zelf een previewserver op dist. Staat E2E_BASE_URL
+// gezet, dan draaien dezelfde tests tegen een echte, al gedeployde site.
+const liveUrl = process.env.E2E_BASE_URL;
+const url = liveUrl ?? `http://127.0.0.1:4173${base}`;
 
 // De E2E-tests draaien tegen de gebouwde site uit dist, dus precies tegen de
 // bestanden die ook gedeployed worden, niet tegen de dev server.
@@ -16,7 +20,7 @@ export default defineConfig({
     screenshot: 'only-on-failure'
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
-  webServer: {
+  ...(liveUrl ? {} : { webServer: {
     // --host vastzetten op 127.0.0.1. Zonder dat bindt vite zich aan
     // "localhost", wat op een CI runner eerst IPv6 is, en dan wacht Playwright
     // zich suf op een server die wel draait maar niet op dat adres luistert.
@@ -27,5 +31,5 @@ export default defineConfig({
     // Zo staat de uitvoer van de server in de log als hij ooit weer faalt.
     stdout: 'pipe',
     stderr: 'pipe'
-  }
+  } })
 });

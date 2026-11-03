@@ -11,73 +11,98 @@ import {
 } from '../src/quote';
 import { quotes } from '../src/quotes';
 
-describe('bladeren', () => {
-  it('gaat vooruit en loopt aan het eind rond naar het begin', () => {
-    expect(volgendeIndex(0, 3)).toBe(1);
-    expect(volgendeIndex(2, 3)).toBe(0);
+// Elke test is opgebouwd als arrange, act, assert. Eerst de uitgangssituatie,
+// dan de handeling, dan één duidelijke controle. De namen beschrijven gedrag
+// in gewone taal, zonder functienamen en zonder het woord "should", zodat
+// iemand die geen programmeur is ze ook kan lezen.
+
+describe('bladeren door de quotes', () => {
+  it('na de laatste quote kom je weer bij de eerste uit', () => {
+    const aantal = 3;              // arrange
+    const resultaat = volgendeIndex(2, aantal); // act
+    expect(resultaat).toBe(0);     // assert
   });
 
-  it('gaat achteruit en loopt aan het begin rond naar het eind', () => {
-    expect(vorigeIndex(2, 3)).toBe(1);
-    expect(vorigeIndex(0, 3)).toBe(2);
+  it('een stap vooruit brengt je bij de volgende quote', () => {
+    const resultaat = volgendeIndex(0, 3);
+    expect(resultaat).toBe(1);
   });
 
-  it('weigert te bladeren zonder quotes', () => {
+  it('voor de eerste quote kom je bij de laatste uit', () => {
+    const resultaat = vorigeIndex(0, 3);
+    expect(resultaat).toBe(2);
+  });
+
+  it('bladeren in een lege verzameling wordt geweigerd', () => {
     expect(() => volgendeIndex(0, 0)).toThrow(RangeError);
     expect(() => vorigeIndex(0, 0)).toThrow(RangeError);
   });
 });
 
-describe('quote van de dag', () => {
-  it('maakt een datumsleutel met voorloopnullen', () => {
+describe('de quote van vandaag', () => {
+  it('een datum wordt een sleutel met voorloopnullen', () => {
     expect(datumSleutel(new Date(2026, 0, 5))).toBe('2026-01-05');
     expect(datumSleutel(new Date(2026, 10, 23))).toBe('2026-11-23');
   });
 
-  it('geeft dezelfde dag altijd dezelfde quote, binnen de lijst', () => {
+  it('dezelfde dag laat de hele dag dezelfde quote zien', () => {
     const ochtend = new Date(2026, 10, 3, 8, 0);
     const avond = new Date(2026, 10, 3, 23, 30);
-    const gekozen = quoteVanDeDag(ochtend, quotes.length);
 
-    expect(quoteVanDeDag(avond, quotes.length)).toBe(gekozen);
-    expect(gekozen).toBeGreaterThanOrEqual(0);
-    expect(gekozen).toBeLessThan(quotes.length);
+    const vroeg = quoteVanDeDag(ochtend, quotes.length);
+    const laat = quoteVanDeDag(avond, quotes.length);
+
+    expect(laat).toBe(vroeg);
+    expect(vroeg).toBeGreaterThanOrEqual(0);
+    expect(vroeg).toBeLessThan(quotes.length);
   });
 
-  it('verdeelt over de dagen heen, niet elke dag dezelfde', () => {
-    const uitkomsten = new Set(
-      Array.from({ length: 60 }, (_, dag) => quoteVanDeDag(new Date(2026, 0, 1 + dag), quotes.length))
+  it('over twee maanden verschijnen er meerdere verschillende quotes', () => {
+    const tweeMaanden = Array.from({ length: 60 }, (_, dag) =>
+      quoteVanDeDag(new Date(2026, 0, 1 + dag), quotes.length)
     );
-    expect(uitkomsten.size).toBeGreaterThan(1);
+
+    expect(new Set(tweeMaanden).size).toBeGreaterThan(1);
   });
 });
 
-describe('bronregel', () => {
-  it('zet een gedachtestreepje voor de bron, en vangt een lege bron op', () => {
+describe('de bronvermelding onder een quote', () => {
+  it('een bekende bron krijgt een gedachtestreepje ervoor', () => {
     expect(bronregel({ id: 'x', tekst: 't', bron: 'Seneca' })).toBe('— Seneca');
+  });
+
+  it('een lege bron wordt onbekend genoemd', () => {
     expect(bronregel({ id: 'x', tekst: 't', bron: '   ' })).toBe('onbekend');
   });
 });
 
-describe('favorieten', () => {
-  it('bewaart en verwijdert, en laat de oude lijst ongemoeid', () => {
-    const begin: string[] = [];
-    const na = wisselFavoriet(begin, 'seneca-verbeelding');
+describe('quotes bewaren', () => {
+  it('een quote bewaren en daarna weer weghalen laat niets achter', () => {
+    const leeg: string[] = [];
 
-    expect(na).toEqual(['seneca-verbeelding']);
-    expect(begin).toEqual([]);
-    expect(wisselFavoriet(na, 'seneca-verbeelding')).toEqual([]);
+    const naBewaren = wisselFavoriet(leeg, 'seneca-verbeelding');
+    const naWeghalen = wisselFavoriet(naBewaren, 'seneca-verbeelding');
+
+    expect(naBewaren).toEqual(['seneca-verbeelding']);
+    expect(naWeghalen).toEqual([]);
+    expect(leeg).toEqual([]);
   });
 
-  it('overleeft rommel in de opslag zonder te klappen', () => {
+  it('onleesbare opgeslagen gegevens leveren een lege lijst op in plaats van een crash', () => {
     expect(parseFavorieten(null)).toEqual([]);
     expect(parseFavorieten('dit is geen json')).toEqual([]);
     expect(parseFavorieten('{"nope":1}')).toEqual([]);
     expect(parseFavorieten('["a", 42, "b"]')).toEqual(['a', 'b']);
   });
 
-  it('houdt de volgorde van de quotes aan en negeert onbekende ids', () => {
-    const gekozen = favorieteQuotes(quotes, ['bestaat-niet', 'heraclitus-rivier', 'seneca-verbeelding']);
-    expect(gekozen.map((quote) => quote.id)).toEqual(['seneca-verbeelding', 'heraclitus-rivier']);
+  it('de bewaarde quotes staan in dezelfde volgorde als op de pagina', () => {
+    const bewaard = ['bestaat-niet', 'heraclitus-rivier', 'seneca-verbeelding'];
+
+    const gekozen = favorieteQuotes(quotes, bewaard);
+
+    expect(gekozen.map((quote) => quote.id)).toEqual([
+      'seneca-verbeelding',
+      'heraclitus-rivier'
+    ]);
   });
 });

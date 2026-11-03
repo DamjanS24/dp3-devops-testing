@@ -1,0 +1,93 @@
+name: rollback
+
+# Handmatig terugrollen naar een eerdere commit. Je geeft een sha op, deze
+# workflow bouwt precies die commit opnieuw en zet hem live op Pages.
+#
+# Bewust geen tests hier. Die commit heeft ze al gehaald toen hij gemerged
+# werd, en een rollback die eerst vijf minuten staat te testen is geen
+# rollback. Je rolt terug omdat er nu iets stuk is.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit om naar terug te rollen, 7 of 40 tekens"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Zelfde groep als ci-cd, zodat een rollback en een gewone deploy elkaar niet
+# in de rug kunnen lopen.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: terugrollen
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.sha }}
+          fetch-depth: 0
+
+      - name: Laat zien waar we naartoe gaan
+        id: doel
+        run: |
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Terugrollen naar $(git log -1 --format='%h  %s  (%ci)')"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Vite build
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy naar GitHub Pages
+        id: pages
+        uses: actions/deploy-pages@v4
+
+      # Controleren dat de rollback ook echt geland is, en niet alleen dat de
+      # deploy zei dat hij klaar was.
+      - name: Nalopen of de site weer in de lucht is
+        run: |
+          url="${{ steps.pages.outputs.page_url }}"
+          for poging in $(seq 1 10); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || true)
+            if [ "$code" = "200" ]; then
+              echo "de site antwoordt met 200"
+              exit 0
+            fi
+            echo "poging $poging gaf $code, nog even wachten"
+            sleep 6
+          done
+          echo "de site kwam niet terug met 200" >&2
+          exit 1
+
+      - name: Samenvatting
+        if: always()
+        run: |
+          {
+            echo "### Rollback"
+            echo "- teruggerold naar \`${{ steps.doel.outputs.sha }}\`"
+            echo "- resultaat ${{ job.status }}"
+            echo "- ${{ steps.pages.outputs.page_url }}"
+          } >> "$GITHUB_STEP_SUMMARY"

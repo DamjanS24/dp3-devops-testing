@@ -1,0 +1,82 @@
+name: monitor
+
+# Observability op het niveau dat bij een statische site past. Er valt hier
+# geen Prometheus te scrapen, dus meten we van buitenaf, zoals een gebruiker
+# dat ervaart. Elke zes uur draaien dezelfde tien browsertests tegen de echte
+# site, plus een meting van de laadtijd.
+#
+# Dit is de lus uit de workshop. Monitoren koppelt terug naar plannen, en dat
+# gebeurt hier door bij een storing een issue aan te maken.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+jobs:
+  controle:
+    name: is de site nog gezond
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      - name: Bereikbaarheid en laadtijd meten
+        id: meting
+        env:
+          SITE: ${{ vars.SITE_URL || 'https://damjans24.github.io/dp3-devops-testing/' }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$SITE" || echo 000)
+          tijd=$(curl -s -o /dev/null -w '%{time_total}' --max-time 15 "$SITE" || echo 0)
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "tijd=$tijd" >> "$GITHUB_OUTPUT"
+          echo "site=$SITE" >> "$GITHUB_OUTPUT"
+          echo "$SITE gaf $code in $tijd seconden"
+          [ "$code" = "200" ]
+
+      - name: Dezelfde tien tests tegen de echte site
+        env:
+          E2E_BASE_URL: ${{ vars.SITE_URL || 'https://damjans24.github.io/dp3-devops-testing/' }}
+        run: npm run e2e
+
+      - name: Meting in de samenvatting
+        if: always()
+        run: |
+          {
+            echo "### Meting"
+            echo "- site ${{ steps.meting.outputs.site }}"
+            echo "- http ${{ steps.meting.outputs.code }}"
+            echo "- laadtijd ${{ steps.meting.outputs.tijd }} seconden"
+            echo "- resultaat ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Het alarm. Eén open issue tegelijk, anders staat de lijst zo vol.
+      - name: Alarm slaan
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bestaand=$(gh issue list --label monitoring --state open --json number --jq '.[0].number')
+          tekst="De geplande controle van $(date -u +'%Y-%m-%d %H:%M UTC') is gefaald. Zie de run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          if [ -n "$bestaand" ]; then
+            gh issue comment "$bestaand" --body "$tekst"
+            echo "bestaand alarm $bestaand bijgewerkt"
+          else
+            gh label create monitoring --color B60205 --description "Storing gevonden door de geplande controle" 2>/dev/null || true
+            gh issue create --title "De site is niet gezond" --label monitoring --body "$tekst"
+            echo "nieuw alarm aangemaakt"
+          fi
