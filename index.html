@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Quote van de dag</title>
   <meta name="description" content="Elke dag een quote, met je eigen favorieten, opgeleverd door een CI/CD pipeline">
+
+  <!-- Webbeveiliging. GitHub Pages laat geen HTTP kopregels toe, dus wat wel
+       via een meta tag kan staat hier. De pagina mag alleen eigen bestanden
+       laden, nergens heen verbinden, en niet in een frame van een ander. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'">
+  <meta name="referrer" content="no-referrer">
 </head>
 <body>
   <main class="scherm">

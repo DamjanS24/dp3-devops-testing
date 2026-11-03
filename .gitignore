@@ -5,3 +5,9 @@ test-results/
 coverage/
 *.log
 setup-github.ps1
+push.ps1
+lighthouse.json
+
+# Documentatie blijft lokaal, die hoort niet in de repository
+docs/
+*.md

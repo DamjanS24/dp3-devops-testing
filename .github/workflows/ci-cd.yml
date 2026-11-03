@@ -7,6 +7,7 @@ name: ci-cd
 #            ->  3 build
 #            ->  4 e2e tests in een echte browser, gedrag en toegankelijkheid
 #            ->  5 deploy naar GitHub Pages
+#            ->  6 controle op de echte site, en terugrollen als die faalt
 
 on:
   push:
@@ -57,10 +58,46 @@ jobs:
         if: always()
         run: echo "Unit tests afgerond met status ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
 
+  # ---------- poortje, draait naast station 1 en 2 ----------
+  beveiliging:
+    name: beveiliging en afhankelijkheden
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Geheimen horen in GitHub Secrets, niet in de repository. Dit kijkt de
+      # hele geschiedenis na, niet alleen de laatste commit.
+      - name: Zoeken naar gelekte geheimen
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:latest \
+            detect --source . --no-banner --redact
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      # De site heeft nul afhankelijkheden tijdens het draaien, dus hier hoort
+      # altijd nul uit te komen. Zodra dat verandert, valt het meteen op.
+      - name: Kwetsbaarheden in wat er live draait
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Samenvatting
+        if: always()
+        run: |
+          {
+            echo "### Beveiliging"
+            echo "- geheimen in de geschiedenis: gecontroleerd met gitleaks"
+            echo "- afhankelijkheden die live draaien: \`npm audit --omit=dev\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ---------- station 3 ----------
   build:
     name: 3 build
-    needs: [lint, unit]
+    needs: [lint, unit, beveiliging]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -118,12 +155,45 @@ jobs:
           VITE_BASE: /${{ github.event.repository.name }}/
         run: npm run e2e
 
+      # Prestatie en toegankelijkheid zijn verplichte kennis in het profiel, dus
+      # ze staan hier als budget en niet als goede bedoeling. Draait tegen de
+      # gebouwde site, met de browser die hierboven al is opgehaald.
+      - name: Prestatie en toegankelijkheidsbudget
+        env:
+          VITE_BASE: /${{ github.event.repository.name }}/
+        run: |
+          CHROME_PATH="$(node -e "console.log(require('playwright').chromium.executablePath())")"
+          export CHROME_PATH
+          npm run preview -- --port 4173 --strictPort --host 127.0.0.1 &
+          npx wait-on "http://127.0.0.1:4173/${{ github.event.repository.name }}/" --timeout 60000
+          npx -y lighthouse@12 "http://127.0.0.1:4173/${{ github.event.repository.name }}/" \
+            --quiet --output=json --output-path=./lighthouse.json \
+            --only-categories=performance,accessibility,best-practices,seo \
+            --chrome-flags="--headless=new --no-sandbox --disable-dev-shm-usage"
+          node -e "
+            const r = require('./lighthouse.json').categories;
+            const budget = { performance: 0.9, accessibility: 1.0, 'best-practices': 0.9, seo: 0.85 };
+            let stuk = false;
+            const regels = [];
+            for (const [naam, minimum] of Object.entries(budget)) {
+              const score = r[naam].score;
+              const goed = score >= minimum;
+              if (!goed) stuk = true;
+              regels.push((goed ? 'ok   ' : 'TE LAAG ') + naam + ' ' + Math.round(score * 100) + ' van minimaal ' + Math.round(minimum * 100));
+            }
+            console.log(regels.join('\n'));
+            require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY, '### Prestatiebudget\n' + regels.map(r => '- ' + r).join('\n') + '\n');
+            if (stuk) process.exit(1);
+          "
+
       - name: Bewaar het rapport als er iets faalt
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: playwright-report
+          path: |
+            playwright-report
+            lighthouse.json
           retention-days: 7
 
   # ---------- station 5 ----------
@@ -135,6 +205,8 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.pages.outputs.page_url }}
+    outputs:
+      page_url: ${{ steps.pages.outputs.page_url }}
     steps:
       - name: Deploy naar GitHub Pages
         id: pages
@@ -142,3 +214,81 @@ jobs:
 
       - name: Samenvatting
         run: echo "Live op ${{ steps.pages.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------- station 6, het vangnet ----------
+  # Station 4 test de bestanden vóór ze live gaan. Dit station test de site
+  # nadat hij live staat, want een geslaagde deploy is nog geen werkende site.
+  # Valt die controle om, dan wordt de vorige goede versie automatisch
+  # teruggezet.
+  controle:
+    name: 6 controle en terugrollen
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # Pages verdeelt via een CDN, dus even geduld voor we iets afkeuren.
+      - name: Wachten tot de site echt antwoordt
+        env:
+          SITE: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          for poging in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$SITE" || true)
+            [ "$code" = "200" ] && { echo "de site antwoordt met 200"; exit 0; }
+            echo "poging $poging gaf $code"
+            sleep 6
+          done
+          echo "de site kwam niet met 200 terug" >&2
+          exit 1
+
+      # Dezelfde tien tests als in station 4, nu tegen de echte site.
+      - name: Dezelfde tests, nu tegen de live site
+        env:
+          E2E_BASE_URL: ${{ needs.deploy.outputs.page_url }}
+        run: npm run e2e
+
+      - name: Bewaar het rapport als er iets faalt
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-live
+          path: playwright-report
+          retention-days: 7
+
+      # Hier zit de automatische rollback. Hij zoekt de laatste run op main die
+      # wel helemaal groen was, en trapt de rollback workflow af met die commit.
+      - name: Terugrollen naar de laatste goede versie
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          vorige=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci-cd.yml/runs?branch=main&status=success&per_page=10" \
+            --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .head_sha] | first")
+
+          if [ -z "$vorige" ] || [ "$vorige" = "null" ]; then
+            echo "geen eerdere geslaagde run gevonden, er valt niets terug te rollen" >&2
+            exit 1
+          fi
+
+          echo "de live controle faalde, terugrollen naar $vorige"
+          gh workflow run rollback.yml --ref main -f sha="$vorige"
+          {
+            echo "### Automatisch teruggerold"
+            echo "- de live controle faalde na de deploy"
+            echo "- rollback gestart naar \`$vorige\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Samenvatting
+        if: success()
+        run: echo "De live site is nagelopen met alle tien de tests" >> "$GITHUB_STEP_SUMMARY"
