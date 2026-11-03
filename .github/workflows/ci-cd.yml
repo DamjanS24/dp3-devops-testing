@@ -123,6 +123,14 @@ jobs:
           path: dist
           retention-days: 7
 
+      # TIJDELIJK EXPERIMENT om de automatische rollback te bewijzen.
+      # Station 4 heeft hierboven al de goede dist opgehaald. Wat hieronder
+      # naar Pages gaat mist zijn bestanden. Dit is precies de fout die je
+      # voor de deploy niet kunt vangen, want wat je getest hebt is niet wat
+      # je verstuurt. Deze stap wordt na de proef meteen teruggedraaid.
+      - name: EXPERIMENT, sloop de kopie die naar Pages gaat
+        run: rm -rf dist/assets
+
       - name: Zet dist klaar als Pages artefact
         uses: actions/upload-pages-artifact@v3
         with:
