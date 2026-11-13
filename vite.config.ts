@@ -1,20 +1,23 @@
 import { defineConfig } from 'vitest/config';
 
-// GitHub Pages serves the site from /<repository-name>/, dus de basis komt uit
-// de pipeline. Lokaal is hij gewoon /.
+// A relative base. The same build therefore works at any URL path, which is
+// what lets one artifact be deployed to staging, verified there, and then
+// promoted to production unchanged. Nothing in the pipeline has to hand a base
+// path in any more, so staging and production cannot drift apart over a setting.
 export default defineConfig({
-  base: process.env.VITE_BASE ?? '/',
+  base: './',
   build: { outDir: 'dist', sourcemap: true },
-  // Vitest draait alleen de unit tests. De E2E-tests zijn van Playwright.
+  // Vitest runs the unit tests only. The browser tests belong to Playwright.
   test: {
     include: ['tests/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'lcov', 'json-summary'],
-      // Alleen de pure logica telt mee. De renderlaag en de quotes zelf
-      // worden door de browsertests gedekt, die meet je hier niet.
-      include: ['src/quote.ts'],
-      thresholds: { lines: 90, functions: 90, branches: 85, statements: 90 }
+      // Only the pure logic counts. The render layer and the quotes themselves
+      // are covered by the browser tests, which this does not measure.
+      include: ['src/quote.ts']
+      // No thresholds here on purpose. Block 3 runs the tests and writes the
+      // report, block 4 is the gate that judges it. See scripts/coverage-gate.mjs.
     }
   }
 });
