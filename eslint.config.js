@@ -12,5 +12,21 @@ export default tseslint.config(
       'prefer-const': 'error',
       'no-console': 'warn'
     }
+  },
+  {
+    // The pipeline's own gate scripts. These run under Node, not in a browser,
+    // and printing is what they are for, so the console rule would only be
+    // noise here.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        fetch: 'readonly',
+        setTimeout: 'readonly',
+        URL: 'readonly'
+      }
+    },
+    rules: { 'no-console': 'off' }
   }
 );

@@ -1,13 +1,32 @@
 name: ci-cd
 
-# De lopende band. Elke push naar main gaat langs vijf stations. Zodra een
-# station een fout vindt, stopt de band en wordt er niets gedeployed.
+# The production line. Every push to main runs through six blocks. As soon as
+# one block finds a problem the line stops and nothing is released.
 #
-#   1 lint   +   2 unit tests      (naast elkaar)
-#            ->  3 build
-#            ->  4 e2e tests in een echte browser, gedrag en toegankelijkheid
-#            ->  5 deploy naar GitHub Pages
-#            ->  6 controle op de echte site, en terugrollen als die faalt
+#   1  lint + security   static checks, side by side, nothing depends on them
+#   2  build             one artifact, and that one artifact is what every
+#                        environment gets from here on
+#   3  tests             unit tests and browser tests, all testing in one block
+#   4  coverage          the gate that judges the coverage numbers
+#   5  staging           deploy, then the full browser suite against the staging
+#                        site, so a release is proven on a real host first
+#   6  production        deploy the same artifact, smoke check it, and roll back
+#                        automatically if the live site is not healthy
+#
+# Two things are worth pointing out about this order.
+#
+# The artifact is built once, in block 2, and every later block downloads that
+# same artifact. Nothing rebuilds. That removes a whole class of failure where
+# what you tested is not what you shipped.
+#
+# Blocks 5 and 6 only run on main. On a pull request the line stops after block
+# 4, which is what branch protection requires to be green before a merge.
+#
+# Setup this workflow needs once, see also the staging block below:
+#   - a repository called <main repo>-staging with Pages serving the gh-pages
+#     branch
+#   - a secret STAGING_DEPLOY_TOKEN, a fine-grained token with Contents: write
+#     on that staging repository and nothing else
 
 on:
   push:
@@ -15,17 +34,26 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege as the default. A block that needs more says so itself.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
+# One release at a time. On a pull request a new push cancels the old run,
+# because that only costs runner minutes. On main it queues instead: cancelling
+# a half-finished deploy, or worse a running rollback, leaves the live site in a
+# state nobody chose.
 concurrency:
-  group: pages-${{ github.ref }}
-  cancel-in-progress: true
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  NODE_VERSION: "22"
+  STAGING_REPOSITORY: DamjanS24/dp3-devops-testing-staging
+  STAGING_URL: https://damjans24.github.io/dp3-devops-testing-staging/
 
 jobs:
-  # ---------- station 1 ----------
+  # ===================== block 1, static checks =====================
+
   lint:
     name: 1 lint
     runs-on: ubuntu-latest
@@ -33,270 +61,348 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
       - name: ESLint
         run: npm run lint
-      - name: TypeScript controle
+      - name: TypeScript
         run: npm run typecheck
 
-  # ---------- station 2, draait tegelijk met station 1 ----------
-  unit:
-    name: 2 unit tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-          cache: npm
-      - run: npm ci
-      - name: Vitest
-        run: npm test
-      - name: Samenvatting
-        if: always()
-        run: echo "Unit tests afgerond met status ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
-
-  # ---------- poortje, draait naast station 1 en 2 ----------
-  beveiliging:
-    name: beveiliging en afhankelijkheden
+  security:
+    name: 1 security
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
+          # The whole history, because a secret removed three commits ago is
+          # still in the repository.
           fetch-depth: 0
 
-      # Geheimen horen in GitHub Secrets, niet in de repository. Dit kijkt de
-      # hele geschiedenis na, niet alleen de laatste commit.
-      - name: Zoeken naar gelekte geheimen
+      - name: Scan the history for leaked secrets
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo zricethezav/gitleaks:latest \
             detect --source . --no-banner --redact
 
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
 
-      # De site heeft nul afhankelijkheden tijdens het draaien, dus hier hoort
-      # altijd nul uit te komen. Zodra dat verandert, valt het meteen op.
-      - name: Kwetsbaarheden in wat er live draait
+      # The site has zero runtime dependencies, so this should always come back
+      # at zero. The moment that changes, it shows up here. That is the point,
+      # not the number.
+      - name: Vulnerabilities in what actually ships
         run: npm audit --omit=dev --audit-level=high
 
-      - name: Samenvatting
+      - name: Summary
         if: always()
         run: |
           {
-            echo "### Beveiliging"
-            echo "- geheimen in de geschiedenis: gecontroleerd met gitleaks"
-            echo "- afhankelijkheden die live draaien: \`npm audit --omit=dev\`"
+            echo "### Security"
+            echo "- secrets across the full history: gitleaks"
+            echo "- shipping dependencies: \`npm audit --omit=dev\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ---------- station 3 ----------
+  # ===================== block 2, build once =====================
+
   build:
-    name: 3 build
-    needs: [lint, unit, beveiliging]
+    name: 2 build
+    needs: [lint, security]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
 
-      # GitHub Pages serveert de site onder /<repository-naam>/, dus die basis
-      # moet in de build zitten, anders vindt de browser de bestanden niet.
+      # The build uses a relative base, so these exact files work both under
+      # /<staging repo>/ and under /<production repo>/. No environment-specific
+      # build, and therefore no way for the two to differ.
       - name: Vite build
-        env:
-          VITE_BASE: /${{ github.event.repository.name }}/
         run: npm run build
 
-      # Dezelfde dist gaat naar station 4 en naar station 5, zodat er getest
-      # wordt op precies de bestanden die live gaan.
-      - name: Bewaar dist voor de e2e tests
+      # The commit this build came from, written into the output. Every deploy
+      # check later polls for this value, so "the deploy finished" and "the site
+      # really serves the new version" stop being the same claim.
+      - name: Stamp the build with its commit
+        run: |
+          echo "$GITHUB_SHA" > dist/version.txt
+          # Tells GitHub Pages not to run Jekyll over the output.
+          touch dist/.nojekyll
+
+      # This is the only artifact in the whole run. Blocks 3, 5 and 6 all
+      # download this one, which is what makes "tested equals shipped" true.
+      - name: Upload the build
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist
+          include-hidden-files: true
           retention-days: 7
 
-      # TIJDELIJK EXPERIMENT om de automatische rollback te bewijzen.
-      # Station 4 heeft hierboven al de goede dist opgehaald. Wat hieronder
-      # naar Pages gaat mist zijn bestanden. Dit is precies de fout die je
-      # voor de deploy niet kunt vangen, want wat je getest hebt is niet wat
-      # je verstuurt. Deze stap wordt na de proef meteen teruggedraaid.
-      - name: EXPERIMENT, sloop de kopie die naar Pages gaat
-        run: rm -rf dist/assets
+      - name: Summary
+        run: |
+          {
+            echo "### Build"
+            echo "- commit \`$GITHUB_SHA\`"
+            echo "- relative base, so one artifact serves every environment"
+            echo '```'
+            ls -la dist
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Zet dist klaar als Pages artefact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
+  # ===================== block 3, all the testing =====================
 
-  # ---------- station 4 ----------
-  e2e:
-    name: 4 e2e tests
+  tests:
+    name: 3 tests
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
 
-      - name: Haal de gebouwde site op
+      - name: Download the build
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist
 
-      - name: Installeer de browser
+      - name: Install the browser
         run: npx playwright install --with-deps chromium
 
-      - name: Playwright
-        env:
-          VITE_BASE: /${{ github.event.repository.name }}/
+      # Fast first. Unit tests run in milliseconds and say where something is
+      # broken; the browser tests say whether the product works.
+      - name: Unit tests, with coverage
+        run: npm run coverage
+
+      # Handed to block 4, which is the block that judges the numbers.
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+          retention-days: 7
+
+      # Behaviour and accessibility, against the built files in dist rather than
+      # against the dev server.
+      - name: Browser tests
         run: npm run e2e
 
-      # Prestatie en toegankelijkheid zijn verplichte kennis in het profiel, dus
-      # ze staan hier als budget en niet als goede bedoeling. Draait tegen de
-      # gebouwde site, met de browser die hierboven al is opgehaald.
-      - name: Prestatie en toegankelijkheidsbudget
-        env:
-          VITE_BASE: /${{ github.event.repository.name }}/
+      - name: Performance and accessibility budget
         run: |
           CHROME_PATH="$(node -e "console.log(require('playwright').chromium.executablePath())")"
           export CHROME_PATH
           npm run preview -- --port 4173 --strictPort --host 127.0.0.1 &
-          npx wait-on "http://127.0.0.1:4173/${{ github.event.repository.name }}/" --timeout 60000
-          npx -y lighthouse@12 "http://127.0.0.1:4173/${{ github.event.repository.name }}/" \
+          npx wait-on "http://127.0.0.1:4173/" --timeout 60000
+          npx -y lighthouse@12 "http://127.0.0.1:4173/" \
             --quiet --output=json --output-path=./lighthouse.json \
             --only-categories=performance,accessibility,best-practices,seo \
             --chrome-flags="--headless=new --no-sandbox --disable-dev-shm-usage"
-          node -e "
-            const r = require('./lighthouse.json').categories;
-            const budget = { performance: 0.9, accessibility: 1.0, 'best-practices': 0.9, seo: 0.85 };
-            let stuk = false;
-            const regels = [];
-            for (const [naam, minimum] of Object.entries(budget)) {
-              const score = r[naam].score;
-              const goed = score >= minimum;
-              if (!goed) stuk = true;
-              regels.push((goed ? 'ok   ' : 'TE LAAG ') + naam + ' ' + Math.round(score * 100) + ' van minimaal ' + Math.round(minimum * 100));
-            }
-            console.log(regels.join('\n'));
-            require('fs').appendFileSync(process.env.GITHUB_STEP_SUMMARY, '### Prestatiebudget\n' + regels.map(r => '- ' + r).join('\n') + '\n');
-            if (stuk) process.exit(1);
-          "
+          node scripts/lighthouse-budget.mjs lighthouse.json
 
-      - name: Bewaar het rapport als er iets faalt
+      - name: Keep the reports when something fails
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: test-reports
           path: |
             playwright-report
             lighthouse.json
           retention-days: 7
 
-  # ---------- station 5 ----------
-  deploy:
-    name: 5 deploy
-    needs: e2e
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.pages.outputs.page_url }}
-    outputs:
-      page_url: ${{ steps.pages.outputs.page_url }}
-    steps:
-      - name: Deploy naar GitHub Pages
-        id: pages
-        uses: actions/deploy-pages@v4
+  # ===================== block 4, the coverage gate =====================
 
-      - name: Samenvatting
-        run: echo "Live op ${{ steps.pages.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"
-
-  # ---------- station 6, het vangnet ----------
-  # Station 4 test de bestanden vóór ze live gaan. Dit station test de site
-  # nadat hij live staat, want een geslaagde deploy is nog geen werkende site.
-  # Valt die controle om, dan wordt de vorige goede versie automatisch
-  # teruggezet.
-  controle:
-    name: 6 controle en terugrollen
-    needs: deploy
-    if: github.ref == 'refs/heads/main'
+  # Separate from block 3 on purpose. A threshold enforced inside the test run
+  # reads as a failing test, which hides what actually went wrong. Red here
+  # means one thing only: the logic is not covered well enough.
+  coverage:
+    name: 4 coverage
+    needs: tests
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage
+          path: coverage
+
+      - name: Judge the coverage against the agreed minimum
+        run: node scripts/coverage-gate.mjs
+
+  # ===================== block 5, staging =====================
+
+  # A second, real environment on its own host, with its own URL. The full
+  # browser suite runs against it. Nothing reaches production that has not first
+  # been proven here on a live site.
+  staging:
+    name: 5 staging
+    needs: coverage
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ env.STAGING_URL }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
 
-      # Pages verdeelt via een CDN, dus even geduld voor we iets afkeuren.
-      - name: Wachten tot de site echt antwoordt
+      - name: Download the build
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Pushed with a token scoped to Contents: write on the staging repository
+      # and nothing else. The run's own GITHUB_TOKEN cannot reach another
+      # repository, which is the whole reason this secret exists.
+      - name: Publish to staging
         env:
-          SITE: ${{ needs.deploy.outputs.page_url }}
+          STAGING_TOKEN: ${{ secrets.STAGING_DEPLOY_TOKEN }}
         run: |
-          for poging in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$SITE" || true)
-            [ "$code" = "200" ] && { echo "de site antwoordt met 200"; exit 0; }
-            echo "poging $poging gaf $code"
-            sleep 6
-          done
-          echo "de site kwam niet met 200 terug" >&2
-          exit 1
+          if [ -z "$STAGING_TOKEN" ]; then
+            echo "::error::The secret STAGING_DEPLOY_TOKEN is not set, so there is nowhere to publish staging to."
+            exit 1
+          fi
+          cd dist
+          git init -q -b gh-pages
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Deploy ${GITHUB_SHA} from ${GITHUB_REPOSITORY}"
+          git push -q --force \
+            "https://x-access-token:${STAGING_TOKEN}@github.com/${STAGING_REPOSITORY}.git" \
+            gh-pages
+          echo "Pushed ${GITHUB_SHA} to ${STAGING_REPOSITORY}"
 
-      # Dezelfde tien tests als in station 4, nu tegen de echte site.
-      - name: Dezelfde tests, nu tegen de live site
+      - name: Wait until staging serves this commit
+        run: node scripts/wait-for-deploy.mjs "$STAGING_URL" "$GITHUB_SHA"
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      # The full suite, against a real deployed site. This is the heaviest gate
+      # in the line and it sits before production, not after it.
+      - name: The full browser suite against staging
         env:
-          E2E_BASE_URL: ${{ needs.deploy.outputs.page_url }}
+          E2E_BASE_URL: ${{ env.STAGING_URL }}
         run: npm run e2e
 
-      - name: Bewaar het rapport als er iets faalt
+      - name: Keep the report when staging fails
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-live
+          name: playwright-report-staging
           path: playwright-report
           retention-days: 7
 
-      # Hier zit de automatische rollback. Hij zoekt de laatste run op main die
-      # wel helemaal groen was, en trapt de rollback workflow af met die commit.
-      - name: Terugrollen naar de laatste goede versie
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Staging verified"
+            echo "- $STAGING_URL"
+            echo "- serving \`$GITHUB_SHA\`"
+            echo "- the full browser suite passed against a live host"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ===================== block 6, production =====================
+
+  # Only reachable once staging is green. Deploys the same artifact, then asks
+  # the one question staging cannot answer: did these files arrive here too.
+  production:
+    name: 6 production
+    needs: staging
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      # Needed to start the rollback workflow.
+      actions: write
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download the build
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      # Packed straight from the downloaded artifact. There is no build step
+      # here that could change the files between the test and the release.
+      - name: Package for Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+      - name: Deploy to GitHub Pages
+        id: pages
+        uses: actions/deploy-pages@v4
+
+      - name: Wait until production serves this commit
+        run: node scripts/wait-for-deploy.mjs "${{ steps.pages.outputs.page_url }}" "$GITHUB_SHA"
+
+      # A smoke check, not the suite again. The suite already passed against
+      # staging. What is left to prove is that the page and every file it asks
+      # for are actually being served from here.
+      - name: Smoke check the live site
+        run: node scripts/smoke.mjs "${{ steps.pages.outputs.page_url }}"
+
+      # The safety net. Finds the last run on main that was fully green and
+      # starts the rollback workflow on that commit.
+      - name: Roll back to the last good release
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          vorige=$(gh api \
+          previous=$(gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/ci-cd.yml/runs?branch=main&status=success&per_page=10" \
             --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID) | .head_sha] | first")
 
-          if [ -z "$vorige" ] || [ "$vorige" = "null" ]; then
-            echo "geen eerdere geslaagde run gevonden, er valt niets terug te rollen" >&2
+          if [ -z "$previous" ] || [ "$previous" = "null" ]; then
+            echo "::error::No earlier successful run found, so there is nothing to roll back to."
             exit 1
           fi
 
-          echo "de live controle faalde, terugrollen naar $vorige"
-          gh workflow run rollback.yml --ref main -f sha="$vorige"
+          echo "The live checks failed, rolling back to $previous"
+          gh workflow run rollback.yml --ref main -f sha="$previous"
           {
-            echo "### Automatisch teruggerold"
-            echo "- de live controle faalde na de deploy"
-            echo "- rollback gestart naar \`$vorige\`"
+            echo "### Rolled back automatically"
+            echo "- the live checks failed after the deploy"
+            echo "- rollback started towards \`$previous\`"
+            echo "- note that main still holds the bad commit, a rollback buys time and does not fix the branch"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Samenvatting
+      - name: Summary
         if: success()
-        run: echo "De live site is nagelopen met alle tien de tests" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          {
+            echo "### Production released"
+            echo "- ${{ steps.pages.outputs.page_url }}"
+            echo "- serving \`$GITHUB_SHA\`, the same artifact staging verified"
+          } >> "$GITHUB_STEP_SUMMARY"

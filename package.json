@@ -3,16 +3,18 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Quote van de dag, de website achter de CI/CD pipeline",
+  "description": "Quote van de dag, the website behind the CI/CD pipeline",
   "scripts": {
     "dev": "vite",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "coverage": "vitest run --coverage",
+    "coverage:gate": "node scripts/coverage-gate.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
