@@ -353,23 +353,6 @@ jobs:
           name: dist
           path: dist
 
-      # TEMPORARY EXPERIMENT, to prove the automatic rollback.
-      #
-      # Block 5 has already deployed this exact artifact to staging and
-      # verified it there with the full browser suite. The line below damages
-      # the copy on its way to production, after the artifact was downloaded
-      # and before it is packaged, so what gets released is no longer what was
-      # tested.
-      #
-      # This is the one remaining place where that can happen, and it is
-      # exactly what block 6 exists to catch. Every check before the deploy
-      # inspects files on a runner, so none of them can see it. The smoke
-      # check asks the real server, so it can.
-      #
-      # Reverted immediately after the proof.
-      - name: EXPERIMENT, damage the copy on its way to production
-        run: rm -rf dist/assets
-
       # Packed straight from the downloaded artifact. There is no build step
       # here that could change the files between the test and the release.
       - name: Package for Pages
