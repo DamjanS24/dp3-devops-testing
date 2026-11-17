@@ -1,17 +1,29 @@
 name: rollback
 
-# Handmatig terugrollen naar een eerdere commit. Je geeft een sha op, deze
-# workflow bouwt precies die commit opnieuw en zet hem live op Pages.
+# Rolling production back to an earlier commit. Give it a sha, and this
+# rebuilds exactly that commit and puts it live on Pages.
 #
-# Bewust geen tests hier. Die commit heeft ze al gehaald toen hij gemerged
-# werd, en een rollback die eerst vijf minuten staat te testen is geen
-# rollback. Je rolt terug omdat er nu iets stuk is.
+# Started two ways: by hand from the Actions tab, and automatically by block 6
+# of ci-cd when the live checks fail after a deploy.
+#
+# Three deliberate choices worth defending.
+#
+# No tests here. That commit already passed them when it was merged, and it was
+# verified on staging before it ever went live. A rollback that spends five
+# minutes testing first is not a rollback. You roll back because something is
+# broken right now.
+#
+# It rebuilds rather than reusing the artifact from the original run. Artifacts
+# expire, and a rollback has to still work in three weeks.
+#
+# It goes straight to production and skips staging. Staging exists to stop a new
+# release; a rollback is a return to a release that was already proven there.
 
 on:
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit om naar terug te rollen, 7 of 40 tekens"
+        description: "Commit to roll back to, 7 or 40 characters"
         required: true
         type: string
 
@@ -20,15 +32,15 @@ permissions:
   pages: write
   id-token: write
 
-# Zelfde groep als ci-cd, zodat een rollback en een gewone deploy elkaar niet
-# in de rug kunnen lopen.
+# The same group as ci-cd, so a rollback and an ordinary deploy cannot run over
+# each other. Not cancel-in-progress here: a rollback must always finish.
 concurrency:
-  group: pages-${{ github.ref }}
+  group: release-refs/heads/main
   cancel-in-progress: false
 
 jobs:
   rollback:
-    name: terugrollen
+    name: roll back production
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -39,11 +51,12 @@ jobs:
           ref: ${{ inputs.sha }}
           fetch-depth: 0
 
-      - name: Laat zien waar we naartoe gaan
-        id: doel
+      - name: Show where we are going
+        id: target
         run: |
-          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "Terugrollen naar $(git log -1 --format='%h  %s  (%ci)')"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "Rolling back to $(git log -1 --format='%h  %s  (%ci)')"
 
       - uses: actions/setup-node@v5
         with:
@@ -53,41 +66,36 @@ jobs:
       - run: npm ci
 
       - name: Vite build
-        env:
-          VITE_BASE: /${{ github.event.repository.name }}/
         run: npm run build
+
+      - name: Stamp the build with its commit
+        run: |
+          echo "${{ steps.target.outputs.sha }}" > dist/version.txt
+          touch dist/.nojekyll
 
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
-      - name: Deploy naar GitHub Pages
+      - name: Deploy to GitHub Pages
         id: pages
         uses: actions/deploy-pages@v4
 
-      # Controleren dat de rollback ook echt geland is, en niet alleen dat de
-      # deploy zei dat hij klaar was.
-      - name: Nalopen of de site weer in de lucht is
-        run: |
-          url="${{ steps.pages.outputs.page_url }}"
-          for poging in $(seq 1 10); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url" || true)
-            if [ "$code" = "200" ]; then
-              echo "de site antwoordt met 200"
-              exit 0
-            fi
-            echo "poging $poging gaf $code, nog even wachten"
-            sleep 6
-          done
-          echo "de site kwam niet terug met 200" >&2
-          exit 1
+      # Checking that the rollback actually landed, not just that the deploy
+      # step said it was done.
+      - name: Wait until production serves the rolled-back commit
+        run: node scripts/wait-for-deploy.mjs "${{ steps.pages.outputs.page_url }}" "${{ steps.target.outputs.sha }}"
 
-      - name: Samenvatting
+      - name: Smoke check the restored site
+        run: node scripts/smoke.mjs "${{ steps.pages.outputs.page_url }}"
+
+      - name: Summary
         if: always()
         run: |
           {
             echo "### Rollback"
-            echo "- teruggerold naar \`${{ steps.doel.outputs.sha }}\`"
-            echo "- resultaat ${{ job.status }}"
+            echo "- rolled back to \`${{ steps.target.outputs.short }}\`"
+            echo "- result ${{ job.status }}"
             echo "- ${{ steps.pages.outputs.page_url }}"
+            echo "- main is unchanged, the bad commit is still there and needs a revert"
           } >> "$GITHUB_STEP_SUMMARY"
